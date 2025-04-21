@@ -1,8 +1,7 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, Header, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, TypedDict
-import asyncio
 import datetime
 
 from langgraph.graph import StateGraph, START, END
@@ -25,34 +24,36 @@ class FinanceInput(BaseModel):
     content: str
 
 class FinanceState(TypedDict):
+    user_token: str
     messages: List[Dict]
     current_input: Dict
     transactions: List[Dict]
     overall_sentiment: str
     advice: str
     predictions: List[Dict]
+    user_token: str
 
 # ====== NODES ======
 async def invoke_ocr(state: FinanceState) -> FinanceState:
-    subgraph_input = {"image_path": state["current_input"]["content"]}
+    subgraph_input = {"image_path": state["current_input"]["content"], "user_token": state["user_token"]}
     output = await ocr_subgraph.ainvoke(subgraph_input)
     state["transactions"].append(output["transaction"])
     return state
 
 async def invoke_extractor(state: FinanceState) -> FinanceState:
-    subgraph_input = {"text": state["current_input"]["content"]}
+    subgraph_input = {"text": state["current_input"]["content"], "user_token": state["user_token"]}
     output = await extractor_subgraph.ainvoke(subgraph_input)
     state["transactions"].extend(output["transactions"])
     return state
 
 async def invoke_sentiment(state: FinanceState) -> FinanceState:
-    subgraph_input = {"text": state["current_input"]["content"]}
+    subgraph_input = {"text": state["current_input"]["content"], "user_token": state["user_token"]}
     output = await sentiment_subgraph.ainvoke(subgraph_input)
     state["overall_sentiment"] = output["overall_sentiment"]
     return state
 
 async def invoke_predictor(state: FinanceState) -> FinanceState:
-    subgraph_input = {"transactions": state["transactions"]}
+    subgraph_input = {"transactions": state["transactions"], "user_token": state["user_token"]}
     output = await predictor_subgraph.ainvoke(subgraph_input)
     state["predictions"] = output["predictions"]
     return state
@@ -61,13 +62,16 @@ async def invoke_advisor(state: FinanceState) -> FinanceState:
     subgraph_input = {
         "transactions": state["transactions"],
         "overall_sentiment": state["overall_sentiment"],
-        "predictions": state["predictions"]
+        "predictions": state["predictions"],
+        "user_token": state["user_token"]
     }
     output = await advisor_subgraph.ainvoke(subgraph_input)
     state["advice"] = output["advice"]
     return state
 
 async def db_insert_node(state: FinanceState) -> FinanceState:
+    print("USER TOKEN DB INSERT:")
+    print(state["user_token"])
     for t in state["transactions"]:
         t.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
         t.setdefault("source", t.get("metadata", {}).get("source", "unknown"))
@@ -100,18 +104,21 @@ workflow.add_edge("advisor", END)
 graph = workflow.compile()
 
 # ====== STREAMING RESPONSE ======
-async def process_input(input_data: Dict):
+async def process_input(input_data: Dict, user_token: str):
     initial_state = {
         "messages": [],
         "current_input": input_data,
         "transactions": [],
         "overall_sentiment": "",
         "advice": "",
-        "predictions": []
+        "predictions": [],
+        "user_token": user_token
     }
 
     response_printed = False
     advice_printed = False
+    print("USER TOKEN PROCESS INPUT:")
+    print(initial_state["user_token"])
 
     async for chunk in graph.astream(initial_state):
         for node_output in chunk.values():
@@ -130,9 +137,11 @@ async def process_input(input_data: Dict):
 
 # ====== ENDPOINTS ======
 @app.post("/process_input")
-async def process_user_input(finance_input: FinanceInput):
+async def process_user_input(finance_input: FinanceInput, request: Request = None):
+    print(request.headers)
+    print(request.headers["x-app-token"])
     input_data = {"type": finance_input.type, "content": finance_input.content}
-    return StreamingResponse(process_input(input_data), media_type="text/plain")
+    return StreamingResponse(process_input(input_data, request.headers["x-app-token"]), media_type="text/plain")
 
 @app.post("/upload_image")
 async def upload_image(file: UploadFile = File(...)):

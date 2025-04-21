@@ -1,12 +1,12 @@
 import requests
 from functools import lru_cache
-from config import LLAMA_API_URL, MODEL_NAME, CACHE_MAX_SIZE
+from config import LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL, MODEL_NAME, CACHE_MAX_SIZE
 import traceback
 
 @lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_llama_call(prompt: str) -> dict:
     payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False}
-    response = requests.post(LLAMA_API_URL, json=payload)
+    response = requests.post(LLAMA_GENERATE_API_URL, json=payload)
     return response.json()
 
 async def ocr_process(image_path: str) -> tuple[str, dict]:
@@ -113,7 +113,7 @@ Câu: "{text}"
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(
-                "http://localhost:11434/api/chat",
+                LLAMA_CHAT_API_URL,
                 json={
                     "model": "llama3.2",
                     "messages": [{"role": "user", "content": prompt}],
@@ -146,7 +146,7 @@ Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             res = await client.post(
-                "http://localhost:11434/api/chat",
+                LLAMA_CHAT_API_URL,
                 json={
                     "model": "llama3.2",
                     "messages": [{"role": "user", "content": prompt}],
@@ -156,7 +156,6 @@ Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người
             res.raise_for_status()
             data = res.json()
             response_text = data.get("message", {}).get("content", "").strip()
-
             if not response_text:
                 return "🤖 Bot bí quá, chưa nghĩ ra câu nào hài!"
             return response_text

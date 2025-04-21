@@ -1,6 +1,8 @@
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, List, Dict
 
+from config import LLAMA_CHAT_API_URL
+
 # ==== STATE DEFINITIONS ====
 
 class OCRState(TypedDict):
@@ -17,11 +19,12 @@ class SentimentState(TypedDict):
 class ExtractorState(TypedDict):
     text: str
     transactions: List[Dict]
+    user_token: str
 
 class PredictorState(TypedDict):
     transactions: List[Dict]
     predictions: List[Dict]
-
+    user_token: str
 # ==== OCR WORKFLOW ====
 
 async def ocr_node(state: OCRState) -> OCRState:
@@ -36,6 +39,8 @@ async def ocr_node(state: OCRState) -> OCRState:
     transaction.setdefault("category", "khác")
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "ocr")
+    print("USER TOKEN OCR:")
+    print(state["user_token"])
     insert_transaction(transaction, sentiment="không rõ", metadata=state["metadata"])
 
     enriched = {**transaction, "metadata": state["metadata"]}
@@ -98,6 +103,8 @@ async def extractor_node(state: ExtractorState) -> ExtractorState:
     transaction["category"] = category
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "text_input")
+    print("USER TOKEN EXTRACTOR:")
+    print(state["user_token"])
     insert_transaction(transaction, sentiment="không rõ", metadata=metadata)
 
     enriched = {**transaction, "metadata": metadata}
@@ -165,6 +172,7 @@ class SentimentState(TypedDict):
     sentiment: str
     sentiment_score: float
     response: str
+    user_token: str
 
 async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
     import httpx
@@ -187,7 +195,7 @@ async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
 
     async with httpx.AsyncClient() as client:
         res = await client.post(
-            "http://localhost:11434/api/chat",
+            LLAMA_CHAT_API_URL,
             json={
                 "model": "llama3.2",
                 "messages": [{"role": "user", "content": prompt}],
