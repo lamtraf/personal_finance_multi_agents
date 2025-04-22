@@ -1,12 +1,14 @@
 import requests
 from functools import lru_cache
-from config import LLAMA_API_URL, MODEL_NAME, CACHE_MAX_SIZE
+from config import LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL, MODEL_NAME, CACHE_MAX_SIZE
 import traceback
+
+from postgre_db import get_categories
 
 @lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_llama_call(prompt: str) -> dict:
     payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False}
-    response = requests.post(LLAMA_API_URL, json=payload)
+    response = requests.post(LLAMA_GENERATE_API_URL, json=payload)
     return response.json()
 
 async def ocr_process(image_path: str) -> tuple[str, dict]:
@@ -90,43 +92,45 @@ def classify_category(text: str) -> str:
 # =============================
 # 3. LLM classification (Ollama /api/chat)
 # =============================
-async def classify_category_llm(text: str) -> str:
-    prompt = f"""
-Phân loại nội dung chi tiêu sau vào một trong các nhóm:
-- thực phẩm
-- tiền nhà
-- tiền điện
-- tiền nước
-- điện thoại / internet
-- đi lại
-- giải trí
-- mua sắm
-- giáo dục
-- y tế
-- khác
 
-Chỉ trả lời đúng một từ tên danh mục duy nhất.
+GOOGLE_GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-Câu: "{text}"
-"""
-
+async def classify_category_llm(text: str) -> tuple[str, str]:
+    categories = await get_categories()
+    categories_str = "\n".join([f"{cat.id}:{cat.name}" for cat in categories])
+    print("CATEGORIES:")
+    print(categories_str)
+    print("TEXT:")
+    prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn 1 câu nói, hãy phân loại nội dung câu nói đó vào một trong các nhóm danh mục trên.\nChỉ trả lời đúng danh mục duy nhất theo cú pháp "id:tên_danh_mục".\n\nCâu: \"{text}\"'
+    print(prompt)
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(
-                "http://localhost:11434/api/chat",
+                GOOGLE_GEMINI_URL,
                 json={
-                    "model": "llama3.2",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False
+                    "contents": [
+                        {
+                            "parts": [
+                                {
+                                    "text": prompt
+                                }
+                            ]
+                        }
+                    ]
+                },
+                params={
+                    "key":"AIzaSyCCsuoRfyhdeMLKyuzi4ae-aUsCKT5ivoQ"
                 }
             )
             res.raise_for_status()
             data = res.json()
-            return data["message"]["content"].strip().lower()
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+            return text
     except Exception:
         print("⚠️ Lỗi khi phân loại bằng LLM:")
         traceback.print_exc()
-        return "khác"
+        
+        return "748a7d51-c8e4-48b6-8e8f-eb59bc341978:khác"
 
 # =============================
 # 4. Tạo phản hồi hài hước (LLM via /api/chat)
@@ -146,7 +150,7 @@ Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             res = await client.post(
-                "http://localhost:11434/api/chat",
+                LLAMA_CHAT_API_URL,
                 json={
                     "model": "llama3.2",
                     "messages": [{"role": "user", "content": prompt}],
@@ -156,7 +160,6 @@ Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người
             res.raise_for_status()
             data = res.json()
             response_text = data.get("message", {}).get("content", "").strip()
-
             if not response_text:
                 return "🤖 Bot bí quá, chưa nghĩ ra câu nào hài!"
             return response_text
@@ -186,4 +189,3 @@ async def predict_spending(transactions: list):
         "confidence": 0.87
     }]
     
-

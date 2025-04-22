@@ -1,5 +1,9 @@
+from fastapi import logger
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, List, Dict
+
+from config import LLAMA_CHAT_API_URL
+from postgre_db import create_transaction
 
 # ==== STATE DEFINITIONS ====
 
@@ -8,20 +12,24 @@ class OCRState(TypedDict):
     extracted_text: str
     transaction: Dict
     metadata: Dict
-
+    user_id: str
+    
 class SentimentState(TypedDict):
     text: str
     sentiment: str
     sentiment_score: float
+    user_id: str
 
 class ExtractorState(TypedDict):
     text: str
     transactions: List[Dict]
+    user_id: str
 
 class PredictorState(TypedDict):
     transactions: List[Dict]
     predictions: List[Dict]
-
+    user_id: str
+    
 # ==== OCR WORKFLOW ====
 
 async def ocr_node(state: OCRState) -> OCRState:
@@ -36,6 +44,7 @@ async def ocr_node(state: OCRState) -> OCRState:
     transaction.setdefault("category", "khác")
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "ocr")
+    transaction.setdefault("user_id", state["user_id"])
     insert_transaction(transaction, sentiment="không rõ", metadata=state["metadata"])
 
     enriched = {**transaction, "metadata": state["metadata"]}
@@ -82,23 +91,14 @@ async def extractor_node(state: ExtractorState) -> ExtractorState:
     transaction, metadata = await extract_receipt_info_advanced(state["text"])
     note = transaction.get("note", "").lower().strip()
 
-    from agents import category_cache
-    category = category_cache.get(note)
+    category_with_id = await classify_category_llm(note)
 
-    if not category:
-        category = classify_category(note)
-        if category == "khác":
-            try:
-                category = await classify_category_llm(note)
-            except Exception as e:
-                print(f"⚠️ Lỗi khi phân loại bằng LLM: {e}")
-                category = "khác"
-        category_cache[note] = category
-
-    transaction["category"] = category
+    transaction["category"] = category_with_id.split(":")[1]
+    transaction["category_id"] = category_with_id.split(":")[0]
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "text_input")
-    insert_transaction(transaction, sentiment="không rõ", metadata=metadata)
+    transaction.setdefault("user_id", state["user_id"])
+    await insert_transaction(transaction, sentiment="không rõ", metadata=metadata)
 
     enriched = {**transaction, "metadata": metadata}
 
@@ -125,6 +125,7 @@ extractor_subgraph = extractor_workflow.compile()
 
 async def predictor_node(state: PredictorState) -> PredictorState:
     from utils import predict_spending
+    print(state["transactions"])
     state["predictions"] = await predict_spending(state["transactions"])
     return state
 
@@ -165,6 +166,7 @@ class SentimentState(TypedDict):
     sentiment: str
     sentiment_score: float
     response: str
+    user_id: str
 
 async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
     import httpx
@@ -187,7 +189,7 @@ async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
 
     async with httpx.AsyncClient() as client:
         res = await client.post(
-            "http://localhost:11434/api/chat",
+            LLAMA_CHAT_API_URL,
             json={
                 "model": "llama3.2",
                 "messages": [{"role": "user", "content": prompt}],

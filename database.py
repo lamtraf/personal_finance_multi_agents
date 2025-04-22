@@ -2,6 +2,7 @@ import sqlite3
 import json
 import datetime
 from config import DB_PATH
+from postgre_db import TransactionCreate, create_transaction
 
 # ===============================
 # Kết nối DB
@@ -42,31 +43,18 @@ def init_db():
 # ===============================
 # Ghi giao dịch
 # ===============================
-def insert_transaction(transaction, sentiment, metadata):
-    conn, c = get_db_connection()
-
-    # Đảm bảo có 'date' và 'source'
-    date = transaction.get("date") or datetime.datetime.now().strftime("%Y-%m-%d")
-    source = transaction.get("source", "unknown")
-    metadata_json = json.dumps(metadata)
-
+async def insert_transaction(transaction, sentiment, metadata):
+    category_id = transaction.get("category_id")
+    amount = transaction.get("amount")
+    user_id = transaction.get("user_id")
     try:
-        c.execute("""
-            INSERT INTO transactions (date, amount, category, source, sentiment, metadata)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            date,
-            transaction["amount"],
-            transaction["category"],
-            source,
-            sentiment,
-            metadata_json
-        ))
+        transactionCreate = TransactionCreate(
+            userId=user_id, categoryId=category_id, amount=amount, currencyId='669d209b-99ac-401d-a441-8fa7bb387d4c')
+        print("TRANSACTION CREATE:")
+        print(transactionCreate.model_dump_json())
+        await create_transaction(transactionCreate)
     except Exception as e:
         print(f"❌ insert_transaction error: {e}")
-    finally:
-        conn.commit()
-        conn.close()
 
 # ===============================
 # Ghi dự đoán
