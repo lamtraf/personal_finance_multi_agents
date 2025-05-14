@@ -1,9 +1,12 @@
+from typing import Dict
+from fastapi import HTTPException
 import requests
 from functools import lru_cache
-from config import LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL, MODEL_NAME, CACHE_MAX_SIZE
+from config import GEMINI_API_KEY, LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL, MODEL_NAME, CACHE_MAX_SIZE
 import traceback
 
-from postgre_db import get_categories
+from database import insert_transaction_pg
+from postgre_db import TransactionCreate, get_categories, insert_bulk_transactions
 
 @lru_cache(maxsize=CACHE_MAX_SIZE)
 def cached_llama_call(prompt: str) -> dict:
@@ -45,7 +48,7 @@ async def extract_receipt_info_advanced(text: str):
     if not match:
         raise ValueError("Không tìm thấy số tiền trong nội dung.")
 
-    num = match.group(1).replace(",", ".")
+    num = match.group(1).replace(",", "").replace(".", "")
     unit = match.group(2) or ""
     amount = float(num)
 
@@ -101,8 +104,7 @@ async def classify_category_llm(text: str) -> tuple[str, str]:
     print("CATEGORIES:")
     print(categories_str)
     print("TEXT:")
-    prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn 1 câu nói, hãy phân loại nội dung câu nói đó vào một trong các nhóm danh mục trên.\nChỉ trả lời đúng danh mục duy nhất theo cú pháp "id:tên_danh_mục".\n\nCâu: \"{text}\"'
-    print(prompt)
+    prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn 1 câu nói, hãy phân loại nội dung câu nói đó vào một trong các nhóm danh mục trên.\nChỉ trả lời đúng danh mục duy nhất theo cú pháp "id:tên_danh_mục".\n\nSố tiền có thể có chứa đấu chấm (.) hoặc dấu phẩy (,) để phân cách phần nghìn. Hãy bỏ qua các kí tự này Ví dụ: 500.000 => 500000 hoặc 500,000 => 500000\n\nCâu: \"{text}\"'
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post(
@@ -119,12 +121,14 @@ async def classify_category_llm(text: str) -> tuple[str, str]:
                     ]
                 },
                 params={
-                    "key":"AIzaSyCCsuoRfyhdeMLKyuzi4ae-aUsCKT5ivoQ"
+                    "key": GEMINI_API_KEY
                 }
             )
             res.raise_for_status()
             data = res.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+            print("API RESPONSE:")
+            print(text)
             return text
     except Exception:
         print("⚠️ Lỗi khi phân loại bằng LLM:")
@@ -188,4 +192,80 @@ async def predict_spending(transactions: list):
         "predicted_amount": transactions[0]["amount"] * 1.2,
         "confidence": 0.87
     }]
+    
+# extract table from receipt
+async def generate_ocr_table(image_url: str, user_id: str) -> Dict:
+    from google import genai
+    import requests
+    from urllib.parse import urlparse
+    import os
+    import uuid
+
+    # Validate URL
+    parsed_url = urlparse(image_url)
+    if parsed_url.scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP/HTTPS URLs are supported")
+
+    # Generate unique filename with UUID
+    file_extension = os.path.splitext(parsed_url.path)[1] or '.jpg'
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    
+    # Download the image from URL
+    response = requests.get(image_url)
+    response.raise_for_status()
+    
+    # Save the image with UUID filename
+    with open(unique_filename, 'wb') as f:
+        f.write(response.content)
+    
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        myfile = client.files.upload(file=unique_filename)
+        transction_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[myfile, "Đây là hoá đơn mua hàng, hãy trích xuất thông tin của từng mặt hàng và tổng tiền của từng mặt hàng. theo cú pháp: <mặt_hàng>:<tổng_tiền>. Không cần đơn vị tiền tệ. Không trả lời thêm thông tin nào khác."])
+        items = transction_response.text.split("\n")
+        # extract data to a dict
+        data = {}
+        for item in items:
+            if ":" in item:
+                key, value = item.split(":")
+                data[key.strip()] = int(value.strip().replace(',', '').replace('.', '').replace(' ', ''))
+        if not data:
+            raise HTTPException(status_code=400, detail="Không tìm thấy dữ liệu trong hóa đơn")
+        
+        print(data)
+        
+        categories = await get_categories()
+        categories_str = "\n".join([f"{cat.id}:{cat.name}" for cat in categories])
+        joined_list = "\n".join([f"\"{key} : {value}\"" for key, value in data.items()])
+        
+        category_prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn danh sách câu nói sau:\n\n{joined_list}\n\nHãy phân loại nội dung từng câu vào một trong các nhóm danh mục trên. Chỉ trả lời danh sách theo cú pháp: <id_danh_mục:số_tiền> phân cách bởi dấu phẩy và không trả lời thêm thông tin gì khác. Nếu không tìm thấy danh mục phù hợp thì trả về id "khác". Loại bỏ các kí tự xuống dòng. Số tiền có thể có chứa đấu chấm (.) hoặc dấu phẩy (,) để phân cách phần nghìn. Hãy bỏ qua các kí tự này Ví dụ: 500.000 => 500000 hoặc 500,000 => 500000'
+        
+        print(category_prompt)
+        
+        category_response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[category_prompt])
+        
+        print("CATEGORY RESPONSE:")
+        print(category_response.text)
+        
+        category_list = [
+            TransactionCreate(
+                userId=user_id,
+                amount=int(item.split(":")[1].strip().replace(',', '').replace('.', '')),
+                categoryId=item.split(":")[0].strip(),
+                note=item.split(":")[1].strip(),
+                currencyId="669d209b-99ac-401d-a441-8fa7bb387d4c",
+                imageUrl=image_url,
+            )
+            for item in category_response.text.split(",")
+        ]
+        transaction_ids = await insert_bulk_transactions(category_list)
+        return transaction_ids
+    finally:
+        # Clean up the downloaded file
+        if os.path.exists(unique_filename):
+            os.remove(unique_filename)
     

@@ -1,7 +1,7 @@
 import asyncio
 from langgraph.graph import StateGraph, START, END
 from agents import ocr_subgraph, sentiment_subgraph, extractor_subgraph, predictor_subgraph, advisor_subgraph
-from database import init_db, insert_transaction, insert_prediction
+from database import init_db, insert_transaction_pg, insert_prediction
 from typing import TypedDict, List, Dict
 import datetime
 
@@ -51,7 +51,7 @@ async def db_insert_node(state: FinanceState) -> FinanceState:
     for t in state["transactions"]:
         t.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
         t.setdefault("source", t.get("metadata", {}).get("source", "unknown"))
-        insert_transaction(t, state["overall_sentiment"], t.get("metadata", {}))
+        insert_transaction_pg(t, state["overall_sentiment"], t.get("metadata", {}))
     for p in state["predictions"]:
         insert_prediction(p)
     return state

@@ -17,7 +17,7 @@ async def get_connection():
     return await asyncpg.connect(DATABASE_URL)
 
 from pydantic import BaseModel
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, UTC
 
 class TransactionCreate(BaseModel):
@@ -35,7 +35,7 @@ class Category(BaseModel):
     
 import uuid
 
-async def create_transaction(data: TransactionCreate):
+async def create_transaction(data: TransactionCreate)-> str:
     query = """
         INSERT INTO "Transaction" (
             id, "userId", amount, note, date, "currencyId",
@@ -62,7 +62,43 @@ async def create_transaction(data: TransactionCreate):
             data.imageUrl
         )
         await conn.close()
-        return dict(result)
+        return result["id"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+async def insert_bulk_transactions(data: List[TransactionCreate]):
+    query = """
+        INSERT INTO "Transaction" (
+            id, "userId", amount, note, date, "currencyId",
+            "categoryId", "createdAt", "updatedAt", "imageUrl"
+        )
+        VALUES (
+            $1, $2, $3, $4, CURRENT_TIMESTAMP, $5,
+            $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $7
+        )
+    """
+    
+    # Convert each TransactionCreate object to a tuple in the correct order
+    params = [
+        (
+            str(uuid.uuid4()),
+            item.userId,
+            item.amount,
+            item.note,
+            item.currencyId,
+            item.categoryId,
+            item.imageUrl
+        )
+        for item in data
+    ]
+    
+    try:
+        conn = await get_connection()
+        await conn.executemany(query, params)
+        await conn.close()
+        # return transaction ids
+        return [item[0] for item in params]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -74,8 +110,5 @@ async def get_categories() -> Dict[str, str]:
     """
     conn = await get_connection()
     result = await conn.fetch(query)
-    # return {
-    #     "name": "id"
-    # }
     return [Category(id=row["id"], name=row["name"]) for row in result]
     

@@ -1,5 +1,4 @@
 import sqlite3
-import json
 import datetime
 from config import DB_PATH
 from postgre_db import TransactionCreate, create_transaction
@@ -43,7 +42,7 @@ def init_db():
 # ===============================
 # Ghi giao dịch
 # ===============================
-async def insert_transaction(transaction, sentiment, metadata):
+async def insert_transaction_pg(transaction, sentiment, metadata):
     category_id = transaction.get("category_id")
     amount = transaction.get("amount")
     user_id = transaction.get("user_id")
@@ -52,7 +51,9 @@ async def insert_transaction(transaction, sentiment, metadata):
             userId=user_id, categoryId=category_id, amount=amount, currencyId='669d209b-99ac-401d-a441-8fa7bb387d4c')
         print("TRANSACTION CREATE:")
         print(transactionCreate.model_dump_json())
-        await create_transaction(transactionCreate)
+        transaction_id = await create_transaction(transactionCreate)
+        print(f"TRANSACTION ID: {transaction_id}")
+        return transaction_id
     except Exception as e:
         print(f"❌ insert_transaction error: {e}")
 

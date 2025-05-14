@@ -14,8 +14,9 @@ from agents import (
     advisor_subgraph
 )
 from agents import SentimentState, ExtractorState, PredictorState, AdvisorState
-from database import insert_transaction, insert_prediction
+from database import insert_transaction_pg, insert_prediction
 from postgre_db import get_categories
+from utils import generate_ocr_table
 
 app = FastAPI()
 
@@ -23,6 +24,10 @@ app = FastAPI()
 class FinanceInput(BaseModel):
     type: str
     content: str
+    user_id: str
+    
+class NewOCRInput(BaseModel):
+    image_url: str
     user_id: str
 
 class FinanceState(TypedDict):
@@ -79,7 +84,7 @@ async def db_insert_node(state: FinanceState) -> FinanceState:
     for t in state["transactions"]:
         t.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
         t.setdefault("source", t.get("metadata", {}).get("source", "unknown"))
-        insert_transaction(t, state["overall_sentiment"], t.get("metadata", {}))
+        insert_transaction_pg(t, state["overall_sentiment"], t.get("metadata", {}))
     for p in state["predictions"]:
         insert_prediction(p)
     return state
@@ -126,12 +131,13 @@ async def process_input(input_data: Dict, user_id: str):
                 if not response_printed:
                     for t in node_output.get("transactions", []):
                         if "response" in t:
-                            yield f"\n🤣 Bot Says:\n{t['response']}\n"
+                            yield f"{t['transaction_id']}  || 🤣 Bot Says:\n{t['response']}\n"
                             response_printed = True
                             break
                 if not advice_printed and "advice" in node_output:
-                    yield f"\n💡 Advice:\n{node_output['advice']}\n"
+                    # yield f"\n💡 Advice:\n{node_output['advice']}\n"
                     advice_printed = True
+                
         if response_printed and advice_printed:
             break
 
@@ -183,3 +189,7 @@ async def get_graph():
         "ocr": ocr_subgraph.get_graph().to_json()
     }
 
+@app.post("/process-ocr-new")
+async def process_ocr_new(input: NewOCRInput):
+    data = await generate_ocr_table(input.image_url, input.user_id)
+    return data

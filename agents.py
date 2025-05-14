@@ -34,7 +34,7 @@ class PredictorState(TypedDict):
 
 async def ocr_node(state: OCRState) -> OCRState:
     from utils import ocr_process, extract_receipt_info_advanced, generate_funny_response
-    from database import insert_transaction
+    from database import insert_transaction_pg
     import datetime
 
     state["extracted_text"], state["metadata"] = await ocr_process(state["image_path"])
@@ -45,10 +45,8 @@ async def ocr_node(state: OCRState) -> OCRState:
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "ocr")
     transaction.setdefault("user_id", state["user_id"])
-    insert_transaction(transaction, sentiment="không rõ", metadata=state["metadata"])
-
+    insert_transaction_pg(transaction, sentiment="không rõ", metadata=state["metadata"])
     enriched = {**transaction, "metadata": state["metadata"]}
-
     try:
         response = await generate_funny_response(transaction)
         enriched["response"] = response
@@ -85,7 +83,7 @@ category_cache = {}
 
 async def extractor_node(state: ExtractorState) -> ExtractorState:
     from utils import extract_receipt_info_advanced, classify_category, classify_category_llm, generate_funny_response
-    from database import insert_transaction
+    from database import insert_transaction_pg
     import datetime
 
     transaction, metadata = await extract_receipt_info_advanced(state["text"])
@@ -98,13 +96,12 @@ async def extractor_node(state: ExtractorState) -> ExtractorState:
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "text_input")
     transaction.setdefault("user_id", state["user_id"])
-    await insert_transaction(transaction, sentiment="không rõ", metadata=metadata)
-
+    transaction_id = await insert_transaction_pg(transaction, sentiment="không rõ", metadata=metadata)
     enriched = {**transaction, "metadata": metadata}
-
     try:
         response = await generate_funny_response(transaction)
         enriched["response"] = response
+        enriched["transaction_id"] = transaction_id
     except Exception as e:
         print(f"⚠️ Lỗi khi tạo câu hài hước: {e}")
 
@@ -201,7 +198,6 @@ async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
             raw = res.json()
             content = raw["message"]["content"]
             data = json.loads(content)
-
             state["sentiment"] = data.get("sentiment")
             state["sentiment_score"] = data.get("sentiment_score")
             state["explanation"] = data.get("explanation")
