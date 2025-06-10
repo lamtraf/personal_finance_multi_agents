@@ -78,8 +78,6 @@ async def insert_bulk_transactions(data: List[TransactionCreate]):
             $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $7
         )
     """
-    
-    # Convert each TransactionCreate object to a tuple in the correct order
     params = [
         (
             str(uuid.uuid4()),
@@ -92,12 +90,10 @@ async def insert_bulk_transactions(data: List[TransactionCreate]):
         )
         for item in data
     ]
-    
     try:
         conn = await get_connection()
         await conn.executemany(query, params)
         await conn.close()
-        # return transaction ids
         return [item[0] for item in params]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

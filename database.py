@@ -48,7 +48,12 @@ async def insert_transaction_pg(transaction, sentiment, metadata):
     user_id = transaction.get("user_id")
     try:
         transactionCreate = TransactionCreate(
-            userId=user_id, categoryId=category_id, amount=amount, currencyId='669d209b-99ac-401d-a441-8fa7bb387d4c')
+            userId=user_id,
+            categoryId=category_id,
+            amount=amount,
+            currencyId='669d209b-99ac-401d-a441-8fa7bb387d4c',
+            imageUrl=metadata.get("image_url")
+        )
         print("TRANSACTION CREATE:")
         print(transactionCreate.model_dump_json())
         transaction_id = await create_transaction(transactionCreate)

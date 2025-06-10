@@ -2,9 +2,13 @@ from fastapi import FastAPI, Header, Request, UploadFile, File, logger
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, TypedDict
+import logging
 import datetime
 
 from langgraph.graph import StateGraph, START, END
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from agents import (
     ocr_subgraph,
@@ -42,10 +46,10 @@ class FinanceState(TypedDict):
 
 # ====== NODES ======
 async def invoke_ocr(state: FinanceState) -> FinanceState:
-    subgraph_input = {"image_path": state["current_input"]["content"], "user_id": state["user_id"]}
+    subgraph_input = {"image_path": state["current_input"]["content"], "user_id": state["user_id"], "overall_sentiment": state["overall_sentiment"]}
     output = await ocr_subgraph.ainvoke(subgraph_input)
-    state["transactions"].append(output["transaction"])
-    return state
+    return output
+
 
 async def invoke_extractor(state: FinanceState) -> FinanceState:
     subgraph_input = {"text": state["current_input"]["content"], "user_id": state["user_id"]}
@@ -56,7 +60,8 @@ async def invoke_extractor(state: FinanceState) -> FinanceState:
 async def invoke_sentiment(state: FinanceState) -> FinanceState:
     subgraph_input = {"text": state["current_input"]["content"], "user_id": state["user_id"]}
     output = await sentiment_subgraph.ainvoke(subgraph_input)
-    state["overall_sentiment"] = output["overall_sentiment"]
+    
+    # state["overall_sentiment"] = output["sentiment"]
     return state
 
 async def invoke_predictor(state: FinanceState) -> FinanceState:
@@ -94,21 +99,16 @@ workflow = StateGraph(FinanceState)
 workflow.add_node("ocr", invoke_ocr)
 workflow.add_node("extractor", invoke_extractor)
 workflow.add_node("sentiment", invoke_sentiment)
-workflow.add_node("predictor", invoke_predictor)
 workflow.add_node("db", db_insert_node)
 workflow.add_node("advisor", invoke_advisor)
-
 workflow.add_conditional_edges(
     START,
     lambda s: "ocr" if s["current_input"]["type"] == "image" else "extractor",
     {"ocr": "ocr", "extractor": "extractor"}
 )
-workflow.add_edge("ocr", "sentiment")
+workflow.add_edge("ocr", END)
 workflow.add_edge("extractor", "sentiment")
-workflow.add_edge("sentiment", "predictor")
-workflow.add_edge("predictor", "db")
-workflow.add_edge("db", "advisor")
-workflow.add_edge("advisor", END)
+workflow.add_edge("sentiment", END)
 
 graph = workflow.compile()
 
@@ -130,12 +130,16 @@ async def process_input(input_data: Dict, user_id: str):
             if isinstance(node_output, dict):
                 if not response_printed:
                     for t in node_output.get("transactions", []):
+                        transaction_ids = ",".join([t["transaction_id"] for t in node_output["transactions"]])
                         if "response" in t:
-                            yield f"{t['transaction_id']}  || 🤣 Bot Says:\n{t['response']}\n"
+                            yield f"{transaction_ids}  || 🤣 Bot Says:\n{t['response']}\n"
                             response_printed = True
+                            if (input_data["type"] == "image"):
+                                logger.info(f"OCR TRANSACTIONS: {node_output['transactions']}")
+                                advice_printed = True
                             break
                 if not advice_printed and "advice" in node_output:
-                    # yield f"\n💡 Advice:\n{node_output['advice']}\n"
+                    yield f"\n💡 Advice:\n{node_output['advice']}\n"
                     advice_printed = True
                 
         if response_printed and advice_printed:
@@ -147,36 +151,11 @@ async def process_user_input(finance_input: FinanceInput, request: Request = Non
     input_data = {"type": finance_input.type, "content": finance_input.content}
     return StreamingResponse(process_input(input_data, finance_input.user_id), media_type="text/plain")
 
-@app.post("/upload_image")
-async def upload_image(file: UploadFile = File(...)):
-    image_path = f"/tmp/{file.filename}"
-    with open(image_path, "wb") as f:
-        f.write(await file.read())
-    return {"image_path": image_path}
 
-
-@app.post("/process_input_sentiment")
-async def process_input_sentiment(finance_input: FinanceInput):
-    async def sentiment_streamer():
-        subgraph_input = {
-            "text": finance_input.content,
-            "sentiment": "",
-            "sentiment_score": 0.0,
-            "response": ""
-        }
-        async for chunk in sentiment_subgraph.astream(subgraph_input):
-            for node_output in chunk.values():
-                if isinstance(node_output, dict):
-                    response = node_output.get("response", "LLM không trả lời")
-                    yield f"{response.strip()}\n"
-                    return
-
-        yield "⚠️ Không nhận được phản hồi.\n"
-
-    return StreamingResponse(sentiment_streamer(), media_type="text/plain")
-
-
-from langchain_core.runnables.graph import MermaidDrawMethod
+@app.post("/process-ocr-langchain")
+async def process_ocr_langchain(input: NewOCRInput):
+    input_data = {"type": "image", "content": input.image_url}
+    return StreamingResponse(process_input(input_data, input.user_id), media_type="text/plain")
 
 @app.get("/graph")
 async def get_graph():
@@ -188,8 +167,3 @@ async def get_graph():
         "extractor": extractor_subgraph.get_graph().to_json(),
         "ocr": ocr_subgraph.get_graph().to_json()
     }
-
-@app.post("/process-ocr-new")
-async def process_ocr_new(input: NewOCRInput):
-    data = await generate_ocr_table(input.image_url, input.user_id)
-    return data

@@ -1,5 +1,6 @@
-from typing import Dict
+from typing import Dict, List
 from fastapi import HTTPException
+from PIL import Image
 import requests
 from functools import lru_cache
 from config import GEMINI_API_KEY, LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL, MODEL_NAME, CACHE_MAX_SIZE
@@ -40,14 +41,12 @@ async def predict_spending(transactions: list[dict]) -> list[dict]:
 
 
 import re
-import datetime
-import httpx
 
 async def extract_receipt_info_advanced(text: str):
     match = re.search(r'(\d+(?:[\.,]?\d+)?)(k|K|nghìn|tr|triệu)?', text)
+
     if not match:
         raise ValueError("Không tìm thấy số tiền trong nội dung.")
-
     num = match.group(1).replace(",", "").replace(".", "")
     unit = match.group(2) or ""
     amount = float(num)
@@ -67,43 +66,12 @@ async def extract_receipt_info_advanced(text: str):
     }
     return transaction, metadata
 
-# =============================
-# 2. Rule-based fallback
-# =============================
-def classify_category(text: str) -> str:
-    text = text.lower()
-
-    categories = {
-        "thực phẩm": ["gạo", "rau", "thịt", "trứng", "sữa", "ăn", "siêu thị", "vinmart"],
-        "tiền nhà": ["thuê nhà", "tiền nhà", "phòng trọ", "nhà nguyên căn"],
-        "tiền điện": ["tiền điện", "hóa đơn điện", "evn"],
-        "tiền nước": ["tiền nước", "hóa đơn nước", "nước sinh hoạt"],
-        "điện thoại / internet": ["viettel", "vina", "mobifone", "wifi", "data", "4g", "5g", "internet"],
-        "đi lại": ["grab", "taxi", "xăng", "xe", "bus", "toll"],
-        "giải trí": ["netflix", "karaoke", "xem phim", "rạp", "game", "spotify"],
-        "mua sắm": ["quần áo", "giày", "mỹ phẩm", "shopee", "lazada", "tiki", "phụ kiện"],
-        "giáo dục": ["học phí", "khóa học", "tiếng anh", "sách", "lớp học"],
-        "y tế": ["thuốc", "khám", "bệnh viện", "hiệu thuốc", "y tế", "bảo hiểm y tế"],
-    }
-
-    for category, keywords in categories.items():
-        if any(kw in text for kw in keywords):
-            return category
-
-    return "khác"
-
-# =============================
-# 3. LLM classification (Ollama /api/chat)
-# =============================
 
 GOOGLE_GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 async def classify_category_llm(text: str) -> tuple[str, str]:
     categories = await get_categories()
     categories_str = "\n".join([f"{cat.id}:{cat.name}" for cat in categories])
-    print("CATEGORIES:")
-    print(categories_str)
-    print("TEXT:")
     prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn 1 câu nói, hãy phân loại nội dung câu nói đó vào một trong các nhóm danh mục trên.\nChỉ trả lời đúng danh mục duy nhất theo cú pháp "id:tên_danh_mục".\n\nSố tiền có thể có chứa đấu chấm (.) hoặc dấu phẩy (,) để phân cách phần nghìn. Hãy bỏ qua các kí tự này Ví dụ: 500.000 => 500000 hoặc 500,000 => 500000\n\nCâu: \"{text}\"'
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -139,16 +107,16 @@ async def classify_category_llm(text: str) -> tuple[str, str]:
 # =============================
 # 4. Tạo phản hồi hài hước (LLM via /api/chat)
 # =============================
-import httpx
 import traceback
 
 import httpx
 import traceback
 
-async def generate_funny_response(transaction: dict) -> str:
+async def generate_funny_response(ocr_text) -> str:
+    
     prompt = f"""
-Người dùng vừa chi {int(transaction['amount']):,} VND cho {transaction['category']} với ghi chú: "{transaction['note']}".
-Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người dùng nếu chi tiêu không hợp lý, tối đa 2 câu. Nhưng chỉ cần 1 câu là đủ.
+Người dùng vừa chi {ocr_text}
+Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người dùng nếu chi tiêu không hợp lý, tối đa 2 câu. Nhưng chỉ cần 1 câu là đủ. Chỉ trả lời bằng tiếng Việt
 """
 
     try:
@@ -156,7 +124,7 @@ Viết một câu phản hồi hài hước, châm biếm, chỉ chửi người
             res = await client.post(
                 LLAMA_CHAT_API_URL,
                 json={
-                    "model": "llama3.2",
+                    "model": "llama3",
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False
                 }
@@ -194,7 +162,7 @@ async def predict_spending(transactions: list):
     }]
     
 # extract table from receipt
-async def generate_ocr_table(image_url: str, user_id: str) -> Dict:
+async def generate_ocr_table(image_url: str, user_id: str) -> tuple[List[TransactionCreate], str]:
     from google import genai
     import requests
     from urllib.parse import urlparse
@@ -220,7 +188,7 @@ async def generate_ocr_table(image_url: str, user_id: str) -> Dict:
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        myfile = client.files.upload(file=unique_filename)
+        myfile = Image.open(unique_filename)
         transction_response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=[myfile, "Đây là hoá đơn mua hàng, hãy trích xuất thông tin của từng mặt hàng và tổng tiền của từng mặt hàng. theo cú pháp: <mặt_hàng>:<tổng_tiền>. Không cần đơn vị tiền tệ. Không trả lời thêm thông tin nào khác."])
@@ -234,23 +202,13 @@ async def generate_ocr_table(image_url: str, user_id: str) -> Dict:
         if not data:
             raise HTTPException(status_code=400, detail="Không tìm thấy dữ liệu trong hóa đơn")
         
-        print(data)
-        
         categories = await get_categories()
         categories_str = "\n".join([f"{cat.id}:{cat.name}" for cat in categories])
         joined_list = "\n".join([f"\"{key} : {value}\"" for key, value in data.items()])
-        
-        category_prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn danh sách câu nói sau:\n\n{joined_list}\n\nHãy phân loại nội dung từng câu vào một trong các nhóm danh mục trên. Chỉ trả lời danh sách theo cú pháp: <id_danh_mục:số_tiền> phân cách bởi dấu phẩy và không trả lời thêm thông tin gì khác. Nếu không tìm thấy danh mục phù hợp thì trả về id "khác". Loại bỏ các kí tự xuống dòng. Số tiền có thể có chứa đấu chấm (.) hoặc dấu phẩy (,) để phân cách phần nghìn. Hãy bỏ qua các kí tự này Ví dụ: 500.000 => 500000 hoặc 500,000 => 500000'
-        
-        print(category_prompt)
-        
+        category_prompt = f'Tôi có một danh sách các danh mục:\n{categories_str}.\nMỗi danh mục có 1 uuid và tên, cách nhau bởi dấu \":\".\nTôi sẽ cho bạn danh sách câu nói sau:\n\n{joined_list}\n\nHãy phân loại nội dung từng câu vào một trong các nhóm danh mục trên. Chỉ trả lời danh sách theo cú pháp: <id_danh_mục:số_tiền> phân cách bởi dấu phẩy và không trả lời thêm thông tin gì khác. Nếu không tìm thấy danh mục phù hợp thì trả về id "khác". Loại bỏ các kí tự xuống dòng. Số tiền có thể có chứa đấu chấm (.) hoặc dấu phẩy (,) để phân cách phần nghìn. Hãy bỏ qua các kí tự này Ví dụ: 500.000 => 500000 hoặc 500,000 => 500000'      
         category_response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=[category_prompt])
-        
-        print("CATEGORY RESPONSE:")
-        print(category_response.text)
-        
+            contents=[category_prompt])        
         category_list = [
             TransactionCreate(
                 userId=user_id,
@@ -262,10 +220,8 @@ async def generate_ocr_table(image_url: str, user_id: str) -> Dict:
             )
             for item in category_response.text.split(",")
         ]
-        transaction_ids = await insert_bulk_transactions(category_list)
-        return transaction_ids
+        return category_list, joined_list
     finally:
         # Clean up the downloaded file
         if os.path.exists(unique_filename):
             os.remove(unique_filename)
-    
