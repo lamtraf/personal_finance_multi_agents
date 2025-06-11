@@ -288,3 +288,38 @@ async def generate_advice_llm(context: Dict) -> str:
         print("⚠️ Lỗi khi tạo câu hướng dẫn:")
         traceback.print_exc()
         return "🤖 Bot đang lỗi kỹ thuật, không thể tạo câu hướng dẫn lúc này."
+
+from enum import Enum
+
+class InputType(Enum):
+    TRANSACTION = "transaction"
+    EXTRACTOR = "extractor"
+    NONE = "none"
+
+async def classify_input_llm(text: str) -> InputType:
+    prompt = f"""
+    Tôi có một câu nói, hãy phân loại câu nói đó vào một trong các nhóm sau:
+    + "transaction" nếu câu nói là về giao dịch
+    + "extractor" nếu câu nói không phải là về giao dịch hoặc câu hỏi
+    + "none" nếu câu nói không phải là về giao dịch hoặc câu hỏi
+    chỉ trả lời "transaction" hoặc "extractor" hoặc "none", không trả lời thêm thông tin gì khác
+    Câu nói: {text}
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(
+                LLAMA_CHAT_API_URL,
+                json={
+                    "model": "llama3",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+            )
+            res.raise_for_status()
+            data = res.json()
+            response_text = data.get("message", {}).get("content", "").strip()
+            return response_text
+    except Exception:
+        print("⚠️ Lỗi khi phân loại câu nói:")
+        traceback.print_exc()
+        return "🤖 Bot đang lỗi kỹ thuật, không thể phân loại câu nói lúc này."

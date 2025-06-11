@@ -4,6 +4,7 @@ from typing import TypedDict, List, Dict
 import logging
 
 from config import LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL
+from personal_finance_multi_agents.utils import InputType
 from postgre_db import create_transaction, insert_bulk_transactions
 
 # ==== STATE DEFINITIONS ====
@@ -204,3 +205,14 @@ sentiment_workflow.set_entry_point("analyze_and_respond")
 sentiment_workflow.add_edge("analyze_and_respond", END)
 sentiment_subgraph = sentiment_workflow.compile()
 sentiment_subgraph = sentiment_workflow.compile()
+
+
+class InputClassifierState(TypedDict):
+    user_id: str
+    text: str
+    input_type: InputType
+
+async def classify_input_node(state: InputClassifierState) -> InputClassifierState:
+    from utils import classify_input_llm
+    input_type = await classify_input_llm(state["text"])
+    return state

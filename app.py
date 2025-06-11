@@ -20,7 +20,7 @@ from agents import (
 from agents import SentimentState, ExtractorState, PredictorState, AdvisorState
 from database import insert_transaction_pg, insert_prediction
 from postgre_db import get_categories
-from utils import generate_ocr_table
+from utils import classify_input_llm, generate_ocr_table
 
 app = FastAPI()
 
@@ -30,6 +30,9 @@ class FinanceInput(BaseModel):
     content: str
     user_id: str
     
+class ClassifyInput(BaseModel):
+    input: str
+
 class NewOCRInput(BaseModel):
     image_url: str
     user_id: str
@@ -168,3 +171,17 @@ async def get_graph():
         "extractor": extractor_subgraph.get_graph().to_json(),
         "ocr": ocr_subgraph.get_graph().to_json()
     }
+    
+
+@app.post("/classify-input")
+async def classify_input(input: ClassifyInput):
+    return await classify_input_llm(input.input)
+
+
+"""
+curl -X 'POST' \
+  'http://192.168.0.109:3000/api/v1/classify-input' \
+  -H 'accept: */*' \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "Tôi đã chi bao nhiêu tiền trong tháng này?"}'
+"""
