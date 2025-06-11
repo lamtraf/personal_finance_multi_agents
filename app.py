@@ -84,8 +84,6 @@ async def invoke_advisor(state: FinanceState) -> FinanceState:
     return state
 
 async def db_insert_node(state: FinanceState) -> FinanceState:
-    print("USER ID DB INSERT:")
-    print(state["user_id"])
     for t in state["transactions"]:
         t.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
         t.setdefault("source", t.get("metadata", {}).get("source", "unknown"))
@@ -99,16 +97,19 @@ workflow = StateGraph(FinanceState)
 workflow.add_node("ocr", invoke_ocr)
 workflow.add_node("extractor", invoke_extractor)
 workflow.add_node("sentiment", invoke_sentiment)
+workflow.add_node("predictor", invoke_predictor)
 workflow.add_node("db", db_insert_node)
 workflow.add_node("advisor", invoke_advisor)
+
 workflow.add_conditional_edges(
     START,
     lambda s: "ocr" if s["current_input"]["type"] == "image" else "extractor",
     {"ocr": "ocr", "extractor": "extractor"}
 )
+
 workflow.add_edge("ocr", END)
-workflow.add_edge("extractor", "sentiment")
-workflow.add_edge("sentiment", END)
+workflow.add_edge("extractor", "advisor")
+workflow.add_edge("advisor", END)
 
 graph = workflow.compile()
 
@@ -119,7 +120,6 @@ async def process_input(input_data: Dict, user_id: str):
         "current_input": input_data,
         "transactions": [],
         "overall_sentiment": "",
-        "advice": "",
         "predictions": [],
         "user_id": user_id
     }
@@ -139,6 +139,7 @@ async def process_input(input_data: Dict, user_id: str):
                                 advice_printed = True
                             break
                 if not advice_printed and "advice" in node_output:
+                    logger.info(f"ADVICE: {node_output['advice']}")
                     yield f"\n💡 Advice:\n{node_output['advice']}\n"
                     advice_printed = True
                 

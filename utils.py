@@ -225,3 +225,66 @@ async def generate_ocr_table(image_url: str, user_id: str) -> tuple[List[Transac
         # Clean up the downloaded file
         if os.path.exists(unique_filename):
             os.remove(unique_filename)
+
+ 
+async def get_advisor_context_data(user_id: str, new_created_transaction_ids: list[str]) -> str:
+    print("GETTING ADVISOR CONTEXT DATA")
+    print(user_id)
+    ids = [transaction['transaction_id'] for transaction in new_created_transaction_ids]
+    print(ids)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "http://192.168.0.109:3000/api/v1/chat/advisor-context",
+                json={
+                    "userId": user_id,
+                    "newCreatedTransactionIds": ids
+                }
+            )
+            response.raise_for_status()
+            context = response.json().get("context")
+            return context
+            
+    except Exception as e:
+        print("⚠️ Lỗi khi lấy dữ liệu ngữ cảnh:")
+        traceback.print_exc()
+        return "Không thể lấy dữ liệu ngữ cảnh lúc này."
+
+async def generate_advice_llm(context: Dict) -> str:
+    new_created_transactions = context.get("newTransactions")
+    profile = context.get("context")
+    prompt = f"""
+    Tôi có một ngữ cảnh về tài chính của người dùng dạng JSON như sau:
+    {profile}
+    
+    Người dùng vừa thêm mới một số giao dịch:
+    {new_created_transactions}
+    
+    Hãy dựa vào thông tin trên. Hãy đưa ra câu trả lời theo 1 trong các mẫu sau:
+    + Nếu người dùng cần hạn chế chi tiêu thêm, hãy đưa ra các gợi ý về việc hạn chế chi tiêu
+    + Nếu người dùng cần tăng chi tiêu, hãy đưa ra các gợi ý về việc tăng chi tiêu
+    + Nếu người dùng cần tăng thu nhập, hãy đưa ra các gợi ý về việc tăng thu nhập
+    + Nếu người dùng cần giảm chi tiêu, hãy đưa ra các gợi ý về việc giảm chi tiêu
+    + Nếu người dùng cần tăng thu nhập, hãy đưa ra các gợi ý về việc tăng thu nhập
+    Nếu không thể trả lời được, thì trả lời "Không có lời khuyên"
+    Chỉ sử dụng tiếng việt, không quá 150 từ
+    """
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            res = await client.post(
+                LLAMA_CHAT_API_URL,
+                json={
+                    "model": "llama3",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+            )
+            res.raise_for_status()
+            data = res.json()
+            response_text = data.get("message", {}).get("content", "").strip()
+            return response_text
+    except Exception:
+        print("⚠️ Lỗi khi tạo câu hướng dẫn:")
+        traceback.print_exc()
+        return "🤖 Bot đang lỗi kỹ thuật, không thể tạo câu hướng dẫn lúc này."

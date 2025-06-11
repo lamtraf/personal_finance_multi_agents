@@ -42,7 +42,7 @@ def init_db():
 # ===============================
 # Ghi giao dịch
 # ===============================
-async def insert_transaction_pg(transaction, sentiment, metadata):
+async def insert_transaction_pg(transaction, metadata):
     category_id = transaction.get("category_id")
     amount = transaction.get("amount")
     user_id = transaction.get("user_id")
@@ -54,10 +54,7 @@ async def insert_transaction_pg(transaction, sentiment, metadata):
             currencyId='669d209b-99ac-401d-a441-8fa7bb387d4c',
             imageUrl=metadata.get("image_url")
         )
-        print("TRANSACTION CREATE:")
-        print(transactionCreate.model_dump_json())
         transaction_id = await create_transaction(transactionCreate)
-        print(f"TRANSACTION ID: {transaction_id}")
         return transaction_id
     except Exception as e:
         print(f"❌ insert_transaction error: {e}")

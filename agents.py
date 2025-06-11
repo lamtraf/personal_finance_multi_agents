@@ -16,12 +16,14 @@ class OCRState(TypedDict):
     transactions: List[Dict]
     response: str
     overall_sentiment: str
-    
+
 class SentimentState(TypedDict):
     text: str
     sentiment: str
     sentiment_score: float
+    response: str
     user_id: str
+    transactions: List[Dict]
 
 class ExtractorState(TypedDict):
     text: str
@@ -38,7 +40,7 @@ class PredictorState(TypedDict):
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+    
 async def ocr_node(state: OCRState) -> OCRState:
     from utils import generate_ocr_table, extract_receipt_info_advanced, generate_funny_response
     from database import insert_transaction_pg    
@@ -81,7 +83,7 @@ async def extractor_node(state: ExtractorState) -> ExtractorState:
     transaction.setdefault("date", datetime.datetime.now().strftime("%Y-%m-%d"))
     transaction.setdefault("source", "text_input")
     transaction.setdefault("user_id", state["user_id"])
-    transaction_id = await insert_transaction_pg(transaction, sentiment="không rõ", metadata=metadata,)
+    transaction_id = await insert_transaction_pg(transaction, metadata=metadata,)
     enriched = {**transaction, "metadata": metadata}
     try:
         response = await generate_funny_response(state["text"])
@@ -121,14 +123,17 @@ from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, List, Dict
 
 class AdvisorState(TypedDict):
+    user_id: str
     transactions: List[Dict]
     overall_sentiment: str
     predictions: List[Dict]
     advice: str
 
 async def advisor_node(state: AdvisorState) -> AdvisorState:
-    from utils import generate_advice_llm
-    advice = await generate_advice_llm(state)
+    from utils import generate_advice_llm, get_advisor_context_data
+    context = await get_advisor_context_data(state["user_id"], state["transactions"])
+    
+    advice = await generate_advice_llm(context)
     state["advice"] = advice
     return state
 
@@ -143,16 +148,12 @@ advisor_subgraph = advisor_workflow.compile()
 
 from langgraph.graph import StateGraph, START, END
 
-class SentimentState(TypedDict):
-    text: str
-    sentiment: str
-    sentiment_score: float
-    response: str
-    user_id: str
 
 async def analyze_and_respond_node(state: SentimentState) -> SentimentState:
     import httpx
     import json
+    
+    logger.info(f"Sentiment State: {state}")
     
     transaction_ids = state["transactions"]
 

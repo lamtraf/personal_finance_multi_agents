@@ -112,7 +112,6 @@ async def stream_response(inputs):
         "current_input": inputs,
         "transactions": [],
         "overall_sentiment": "",
-        "advice": "",
         "predictions": []
     }
 
