@@ -7,6 +7,8 @@ import datetime
 
 from langgraph.graph import StateGraph, START, END
 
+from new_agent import UserInputState, invoke_graph_stream
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -171,17 +173,28 @@ async def get_graph():
         "extractor": extractor_subgraph.get_graph().to_json(),
         "ocr": ocr_subgraph.get_graph().to_json()
     }
+
+class APIUserInput(BaseModel):
+    user_id: str
+    user_input: str | None = None
+    image_url: str | None = None
     
-
-@app.post("/classify-input")
-async def classify_input(input: ClassifyInput):
-    return await classify_input_llm(input.input)
-
-
-"""
-curl -X 'POST' \
-  'http://192.168.0.109:3000/api/v1/classify-input' \
-  -H 'accept: */*' \
-  -H 'Content-Type: application/json' \
-  -d '{"input": "Tôi đã chi bao nhiêu tiền trong tháng này?"}'
-"""
+@app.post('/new-input')
+async def new_input(input: APIUserInput):
+    try:
+        input_state = {
+            "user_id": input.user_id,
+            "user_input": input.user_input,
+            "image_url": input.image_url
+        }
+        return StreamingResponse(
+            invoke_graph_stream(input_state),
+            media_type="text/plain",
+            headers={
+                "Transfer-Encoding": "chunked",
+                "Connection": "keep-alive"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error in new-input endpoint: {str(e)}")
+        raise

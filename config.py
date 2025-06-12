@@ -6,3 +6,5 @@ MODEL_NAME = "llama3.2"
 CACHE_MAX_SIZE = 100  # Kích thước cache cho các hàm gọi Llama 3.2
 DB_PATH = "finance_v2.db"  # Đường dẫn cơ sở dữ liệu SQLite
 GEMINI_API_KEY = "AIzaSyCCsuoRfyhdeMLKyuzi4ae-aUsCKT5ivoQ"
+
+DEFAULT_CURRENCY_ID="669d209b-99ac-401d-a441-8fa7bb387d4c"

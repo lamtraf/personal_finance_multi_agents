@@ -8,10 +8,9 @@ import asyncpg
 # PostgreSQL connection URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-print("DATABASE_URL:")
-print(DATABASE_URL)
+# DATABASE_URL = "postgresql://kmoney-db:test1234@localhost:5432/kmoneydb"
 
-# DATABASE_URL = os.getenv("postgresql://kmoney-db:test1234@db:5432/kmoneydb")
+print("DATABASE_URL: ", DATABASE_URL)
 
 async def get_connection():
     return await asyncpg.connect(DATABASE_URL)

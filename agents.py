@@ -3,9 +3,8 @@ from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, List, Dict
 import logging
 
-from config import LLAMA_CHAT_API_URL, LLAMA_GENERATE_API_URL
-from personal_finance_multi_agents.utils import InputType
-from postgre_db import create_transaction, insert_bulk_transactions
+from config import LLAMA_CHAT_API_URL
+from postgre_db import TransactionCreate, create_transaction, insert_bulk_transactions
 
 # ==== STATE DEFINITIONS ====
 
@@ -43,13 +42,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
     
 async def ocr_node(state: OCRState) -> OCRState:
-    from utils import generate_ocr_table, extract_receipt_info_advanced, generate_funny_response
+    from utils import generate_ocr_table, extract_user_input_info, generate_funny_response
     from database import insert_transaction_pg    
     transaction_create_list, ocr_text = await generate_ocr_table(state["image_path"], state["user_id"])
     try:
         transaction_ids = await insert_bulk_transactions(transaction_create_list)
         response = await generate_funny_response(ocr_text)
-        
         enriched_transactions = []
         for transaction_id in transaction_ids:
             enriched_transactions.append({
@@ -70,11 +68,11 @@ ocr_workflow.add_edge("process_ocr", END)
 ocr_subgraph = ocr_workflow.compile()
 
 async def extractor_node(state: ExtractorState) -> ExtractorState:
-    from utils import extract_receipt_info_advanced, classify_category_llm, generate_funny_response
+    from utils import extract_user_input_info, classify_category_llm, generate_funny_response
     from database import insert_transaction_pg
     import datetime
 
-    transaction, metadata = await extract_receipt_info_advanced(state["text"])
+    transaction, metadata = await extract_user_input_info(state["text"])
     note = transaction.get("note", "").lower().strip()
 
     category_with_id = await classify_category_llm(note)
@@ -103,8 +101,6 @@ extractor_workflow.add_edge(START, "process_extractor")
 extractor_workflow.add_edge("process_extractor", END)
 
 extractor_subgraph = extractor_workflow.compile()
-
-
 
 # ==== PREDICTOR WORKFLOW ====
 
@@ -206,13 +202,3 @@ sentiment_workflow.add_edge("analyze_and_respond", END)
 sentiment_subgraph = sentiment_workflow.compile()
 sentiment_subgraph = sentiment_workflow.compile()
 
-
-class InputClassifierState(TypedDict):
-    user_id: str
-    text: str
-    input_type: InputType
-
-async def classify_input_node(state: InputClassifierState) -> InputClassifierState:
-    from utils import classify_input_llm
-    input_type = await classify_input_llm(state["text"])
-    return state
