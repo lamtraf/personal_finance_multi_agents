@@ -3,13 +3,13 @@ from new_agent import invoke_graph_stream, get_graph
 
 
 initial_extractor_state = {
-    "user_id": "26138326-d395-4081-a154-f8955d489f7a",
+    "user_id": "68aaed9e-b3b3-481a-a30d-5cec3e248dc7",
     "user_input": "Mua gà rán 500k",
     "image_url": None
 }
 
 initial_question_state = {
-    "user_id": "26138326-d395-4081-a154-f8955d489f7a",
+    "user_id": "68aaed9e-b3b3-481a-a30d-5cec3e248dc7",
     "user_input": "Tháng vừa rồi tiêu bao nhiêu tiền?",
     "image_url": None
 }
@@ -21,8 +21,8 @@ initial_ocr_state = {
 }
 
 async def main():
-    async for chunk in invoke_graph_stream(initial_extractor_state):
-        print(chunk)
+    # async for chunk in invoke_graph_stream(initial_extractor_state):
+        # print(chunk)
     
     # result = await new_advice_workflow.ainvoke(initial_advice_state)
     
@@ -30,7 +30,7 @@ async def main():
     # result = await new_extractor_graph.ainvoke(initial_state)
     # print(result)
     
-    # print(get_graph())
+    print(get_graph())
 
 if __name__ == "__main__":
     asyncio.run(main())

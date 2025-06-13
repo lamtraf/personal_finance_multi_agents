@@ -5,6 +5,7 @@ It uses a directed graph to process different types of inputs (transactions, OCR
 
 import datetime
 from enum import Enum
+import traceback
 from typing import List, TypedDict, Callable, Any
 import uuid
 from functools import wraps
@@ -13,7 +14,9 @@ import logging
 import os
 import json
 
-from postgre_db import TransactionCreate
+from fastapi import HTTPException
+
+from postgre_db import BudgetCreate, TransactionCreate, insert_bulk_budgets, insert_bulk_transactions
 from utils import DEFAULT_CURRENCY_ID, InputType, get_advisor_context_data, new_generate_ocr_table
 from langgraph.graph import StateGraph, START, END
 
@@ -42,6 +45,27 @@ class ExtractedTransactionData(TypedDict):
     image_url: str | None = None
     currency_id: str
     
+class AddBudgetOutput(TypedDict):
+    """Represents the output of a budget addition operation.
+    
+    Attributes:
+        id (str): Unique identifier for the budget category
+        amount (float): Amount of the budget
+    """
+    category_id: str
+    category_name: str
+    amount: float
+    name: str
+    
+    
+class ChatRole(str, Enum):
+    USER = "user"
+    BOT = "bot"
+    
+class ChatHistoryItem(TypedDict):
+    role: ChatRole
+    content: str
+        
 class UserInputState(TypedDict):
     """Base state for user input processing.
     
@@ -53,7 +77,8 @@ class UserInputState(TypedDict):
     user_id: str
     user_input: str | None = None
     image_url: str | None = None
-
+    chat_history: List[ChatHistoryItem] = []
+    error_message: str | None = None
 
 class InputClassifierState(UserInputState):
     """State after input classification.
@@ -70,14 +95,23 @@ class ExtractorState(InputClassifierState):
         transaction_output (List[TransactionOutput]): List of extracted transactions
     """
     transaction_output: List[ExtractedTransactionData] | None = None
+    
+class AddBudgetState(InputClassifierState):
+    """State after adding budget.
+    
+    Attributes:
+        add_budget_response (str): Generated budget response
+    """
+    add_budget_output: AddBudgetOutput
 
-class DbInsertState(ExtractorState):
+class DbInsertState(ExtractorState, AddBudgetState):
     """State after database insertion.
     
     Attributes:
         created_transaction_ids (List[str]): List of IDs of created transactions
     """
     created_transaction_ids: List[str]
+    created_budget_ids: List[str]
     
 class AdviceState(DbInsertState):
     """State after generating advice.
@@ -104,10 +138,10 @@ class QuestionState(InputClassifierState):
     
     Attributes:
         user_context (str): Context of the user's question
-        llm_response (str): Response from the language model
+        rag_response (str): Response from the language model
     """
     user_context: str
-    llm_response: str
+    rag_response: str
 
 class OCRState(InputClassifierState):
     """State for OCR processing.
@@ -202,9 +236,14 @@ async def new_input_classifier_node(state: UserInputState) -> InputClassifierSta
         new_state = InputClassifierState(**state, input_type=InputType.OCR)
         return new_state
     else:
-        input_type = await classify_input_llm(state["user_input"])
-        new_state = InputClassifierState(**state, input_type=input_type)
-        return new_state
+        try:
+            input_type = await classify_input_llm(state["user_input"])
+            new_state = InputClassifierState(**state, input_type=input_type, error_message=None if input_type != InputType.ERROR else "Không xác định được câu truy vấn")
+            return new_state
+        except Exception as e:
+            print(f"❌ Error in new_input_classifier_node: {e}")
+            new_state = InputClassifierState(**state, input_type=InputType.ERROR, error_message="🤖 Bot đang lỗi kỹ thuật, không thể phân loại câu nói lúc này.")
+            return new_state
 
 async def new_ocr_node(state: InputClassifierState) -> OCRState:
     """Processes an image using OCR to extract transaction information.
@@ -228,24 +267,58 @@ async def new_extractor_node(state: ExtractorState) -> ExtractorState:
     Returns:
         ExtractorState: New state with extracted transaction information
     """
-    from utils import extract_user_input_info, classify_category_llm
-    transaction = await extract_user_input_info(state["user_input"])
-    category_data = await classify_category_llm(transaction["note"])
-    category_id = category_data.split(":")[0]
-    category_name = category_data.split(":")[1]
-    transaction_output = {
-        "category_id": category_id,
-        "category_name": category_name,
-        "amount": transaction["amount"],
-        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-        "note": transaction["note"],
-        "source": "text_input",
-        "user_id": state["user_id"],
-        "currency_id": DEFAULT_CURRENCY_ID,
-        "image_url": None
-    }
-    new_state = ExtractorState(**state, transaction_output=[transaction_output])
-    return new_state
+    try:
+        from utils import extract_user_input_info, classify_category_llm
+        transaction = await extract_user_input_info(state["user_input"])
+        category_data = await classify_category_llm(transaction["note"])
+        category_id = category_data.split(":")[0]
+        category_name = category_data.split(":")[1]
+        transaction_output = {
+            "category_id": category_id,
+            "category_name": category_name,
+            "amount": transaction["amount"],
+            "date": datetime.now(datetime.timezone(datetime.timedelta(hours=7))).strftime("%Y-%m-%d"),
+            "note": transaction["note"],
+            "source": "text_input",
+            "user_id": state["user_id"],
+            "currency_id": DEFAULT_CURRENCY_ID,
+            "image_url": None
+        }
+        new_state = ExtractorState(**state, transaction_output=[transaction_output])
+        return new_state
+    except Exception as e:
+        print(f"❌ Error in new_extractor_node: {e}")
+        new_state = ExtractorState(**state, transaction_output=[])
+        new_state["error_message"] = "🤖 Bot đang lỗi kỹ thuật, không thể tạo câu trả lời"
+        return new_state
+
+
+async def new_add_budget_node(state: InputClassifierState) -> AddBudgetState:
+    """Processes a user question and generates a response.
+    
+    Args:
+        state (QuestionState): Current state containing user question
+        
+    Returns:
+        InputClassifierState: New state with generated response
+    """
+    try:
+        from utils import generate_add_budget_llm
+        budget_data = await generate_add_budget_llm(state["user_input"])
+        category_id, category_name, amount, name = budget_data.split(":")
+        add_budget_output = AddBudgetOutput(
+            category_id=category_id,
+            category_name=category_name,
+            amount=amount,
+            name=name
+        )
+        new_state = AddBudgetState(**state, add_budget_output=add_budget_output)
+        return new_state
+    except Exception as e:
+        print(f"❌ Error in new_add_budget_node: {e}")
+        new_state = AddBudgetState(**state)
+        new_state["error_message"] = "🤖 Bot đang lỗi kỹ thuật, không thể tạo câu trả lời"
+        return new_state
 
 async def new_insert_db_node(state: DbInsertState):
     """Inserts transactions into the database.
@@ -256,22 +329,44 @@ async def new_insert_db_node(state: DbInsertState):
     Returns:
         DbInsertState: New state with created transaction IDs
     """
-    transaction_create_list = [
-        TransactionCreate(
-            userId=state["user_id"],
-            amount=transaction["amount"],
-            note=transaction["note"],
-            date=transaction["date"],
-            currencyId=transaction["currency_id"],
-            categoryId=transaction["category_id"],
-            imageUrl=transaction["image_url"]
-        )
-        for transaction in state["transaction_output"]
-        ]
-    
-    transaction_ids = await insert_bulk_transactions_mock(transaction_create_list)
-    new_state = DbInsertState(**state, created_transaction_ids=transaction_ids)
-    return new_state
+    try:
+        if state["input_type"] == InputType.EXTRACTOR or state["input_type"] == InputType.OCR:
+            transaction_create_list = [
+            TransactionCreate(
+                userId=state["user_id"],
+                amount=transaction["amount"],
+                note=transaction["note"],
+                date=transaction["date"],
+                currencyId=transaction["currency_id"],
+                categoryId=transaction["category_id"],
+                imageUrl=transaction["image_url"]
+            )
+            for transaction in state["transaction_output"]
+            ]
+            transaction_ids = await insert_bulk_transactions(transaction_create_list)
+            new_state = DbInsertState(**state, created_transaction_ids=transaction_ids)
+            return new_state
+        elif state["input_type"] == InputType.ADD_BUDGET:
+            budget_create_list = [
+                BudgetCreate(
+                    user_id=state["user_id"],
+                    amount=state["add_budget_output"]["amount"],
+                    category_id=state["add_budget_output"]["category_id"],
+                    name=state["add_budget_output"]["name"]
+                )
+            ]
+            
+            budget_ids = await insert_bulk_budgets(budget_create_list)
+            new_state = DbInsertState(**state, created_budget_ids=budget_ids)
+            return new_state
+            
+    except Exception as e:
+        print(f"❌ Error in new_insert_db_node: {e}")
+        # print traceback
+        print(traceback.format_exc())
+        new_state = DbInsertState(**state, created_transaction_ids=[], created_budget_ids=[])
+        new_state["error_message"] = "🤖 Bot đang lỗi kỹ thuật, không thể tạo thêm giao dịch"
+        return new_state
 
 async def new_generate_funny_response_node(state: DbInsertState) -> FunnyResponseState:
     """Generates a humorous response based on the transaction.
@@ -283,7 +378,7 @@ async def new_generate_funny_response_node(state: DbInsertState) -> FunnyRespons
         FunnyResposeState: New state with generated funny response
     """
     from utils import generate_funny_response
-    response = await generate_funny_response(state["user_input"])
+    response = await generate_funny_response(state["user_input"], state["chat_history"])
     new_state = FunnyResponseState(**state, generated_funny_response=response)
     return new_state
 
@@ -298,7 +393,7 @@ async def new_generate_advice_node(state: DbInsertState) -> AdviceState:
     """
     from utils import generate_advice_llm
     context = await get_advisor_context_data(state["user_id"], state["created_transaction_ids"])
-    advice = await generate_advice_llm(context=context)
+    advice = await generate_advice_llm(context=context, chat_history=state["chat_history"])
     new_state = AdviceState(**state, generated_advice=advice)
     return new_state
     
@@ -318,10 +413,16 @@ async def new_question_node(state: QuestionState) -> QuestionState:
     """
     from utils import generate_rag, get_rag_context
     
-    rag_context = await get_rag_context(state["user_id"])
-    question = await generate_rag(rag_context, state["user_input"])
-    new_state = QuestionState(**state, llm_response=question)
-    return new_state
+    try:
+        rag_context = await get_rag_context(state["user_id"])
+        question = await generate_rag(rag_context, state["user_input"], state["chat_history"])
+        new_state = QuestionState(**state, rag_response=question)
+        return new_state
+    except Exception as e:
+        print(f"❌ Error in new_question_node: {e}")
+        new_state = QuestionState(**state, rag_response="Lỗi khi tạo câu trả lời")
+        return new_state
+    
 
 # =============================GRAPH=============================
 
@@ -331,6 +432,7 @@ class NodeName(str, Enum):
     EXTRACTOR = "extractor"
     OCR = "ocr"
     QUESTION = "question"
+    ADD_BUDGET = "add_budget"
     INSERT_DB = "insert_db"
     GENERATE_FUNNY_RESPONSE = "generate_funny_response"
     GENERATE_ADVICE = "generate_advice"
@@ -350,8 +452,10 @@ def get_classifier_next_node(x: InputClassifierState) -> str:
         return NodeName.OCR.value
     elif x["input_type"] == InputType.QUESTION:
         return NodeName.QUESTION.value
-    else:
-        raise ValueError(f"Invalid input type: {x['input_type']}")
+    elif x["input_type"] == InputType.ADD_BUDGET:
+        return NodeName.ADD_BUDGET.value
+    elif x["input_type"] == InputType.ERROR:
+        return END
     
 def get_insert_db_next_node(x: DbInsertState) -> str:
     """Determines the next node based on input type.
@@ -363,12 +467,12 @@ def get_insert_db_next_node(x: DbInsertState) -> str:
         str: Name of the next node to process
     """
     if x["input_type"] == InputType.EXTRACTOR:
-        return NodeName.GENERATE_ADVICE.value
+        return NodeName.GENERATE_FUNNY_RESPONSE.value
     elif x["input_type"] == InputType.OCR:
-        return END
+        return NodeName.GENERATE_ADVICE.value
     elif x["input_type"] == InputType.QUESTION:
         return END
-    else:
+    elif x["input_type"] == InputType.ADD_BUDGET:
         return END
 
 # Initialize the graph
@@ -376,23 +480,31 @@ new_agent_graph = StateGraph(FunnyResponseState, input=UserInputState, output=Fu
 
 # Add nodes to the graph with middleware
 new_agent_graph.add_node(NodeName.CLASSIFIER.value, create_middleware(new_input_classifier_node))
+
 new_agent_graph.add_node(NodeName.EXTRACTOR.value, create_middleware(new_extractor_node))
+new_agent_graph.add_node(NodeName.OCR.value, create_middleware(new_ocr_node))
+new_agent_graph.add_node(NodeName.QUESTION.value, create_middleware(new_question_node))
+new_agent_graph.add_node(NodeName.ADD_BUDGET.value, create_middleware(new_add_budget_node))
+
 new_agent_graph.add_node(NodeName.INSERT_DB.value, create_middleware(new_insert_db_node))
+
 new_agent_graph.add_node(NodeName.GENERATE_FUNNY_RESPONSE.value, create_middleware(new_generate_funny_response_node))
 new_agent_graph.add_node(NodeName.GENERATE_ADVICE.value, create_middleware(new_generate_advice_node))
-new_agent_graph.add_node(NodeName.QUESTION.value, create_middleware(new_question_node))
-new_agent_graph.add_node(NodeName.OCR.value, create_middleware(new_ocr_node))
 
 # Add edges to the graph
 new_agent_graph.add_edge(START, NodeName.CLASSIFIER.value)
+new_agent_graph.add_edge(NodeName.CLASSIFIER.value, END)
+
 
 # Add conditional edges based on input type
 new_agent_graph.add_conditional_edges(
     NodeName.CLASSIFIER.value,
     get_classifier_next_node,
 )
+
 new_agent_graph.add_edge(NodeName.EXTRACTOR.value, NodeName.INSERT_DB.value)
 new_agent_graph.add_edge(NodeName.OCR.value, NodeName.INSERT_DB.value)
+new_agent_graph.add_edge(NodeName.ADD_BUDGET.value, NodeName.INSERT_DB.value)
 
 new_agent_graph.add_conditional_edges(
     NodeName.INSERT_DB.value,
@@ -400,8 +512,8 @@ new_agent_graph.add_conditional_edges(
 )
 
 # Add remaining edges
-new_agent_graph.add_edge(NodeName.GENERATE_ADVICE.value, NodeName.GENERATE_FUNNY_RESPONSE.value)
-new_agent_graph.add_edge(NodeName.GENERATE_FUNNY_RESPONSE.value, END)
+new_agent_graph.add_edge(NodeName.GENERATE_FUNNY_RESPONSE.value, NodeName.GENERATE_ADVICE.value)
+new_agent_graph.add_edge(NodeName.GENERATE_ADVICE.value, END)
 new_agent_graph.add_edge(NodeName.QUESTION.value, END)
 
 # Compile the graph
@@ -467,15 +579,32 @@ async def invoke_graph_stream(initial_state: UserInputState):
             for node_name, node_output in chunk.items():
                 print(f"Node name: {node_name}")
                 if isinstance(node_output, dict):
-                    if "transaction_output" in node_output and "transaction_output" not in yielded_responses:
+                    if "error_message" in node_output and "error_message" not in yielded_responses and node_output["error_message"]:
+                        yield json.dumps({
+                            "type": "error",
+                            "data": node_output["error_message"]
+                        })
+                        yielded_responses.add("error_message")
+                        break;
+                    if "created_transaction_ids" in node_output and "created_transaction_ids" not in yielded_responses:
                         transactions = node_output["transaction_output"]
+                        created_transaction_ids = node_output["created_transaction_ids"]
                         if transactions:
                             yield json.dumps({
                                 "type": "transactions",
-                                "message": "Processing transactions...",
-                                "data": transactions
+                                "message": "Đã tạo giao dịch mới!",
+                                "data": transactions,
+                                "created_transaction_ids": created_transaction_ids
                             })
-                            yielded_responses.add("transaction_output")
+                            yielded_responses.add("created_transaction_ids")
+                    
+                    if "created_budget_ids" in node_output and "created_budget_ids" not in yielded_responses:
+                        yield json.dumps({
+                            "type": "budgets",
+                            "message": "Đã tạo ngân sách mới!",
+                            "created_budget_ids": node_output["created_budget_ids"]
+                        })
+                        yielded_responses.add("created_budget_ids")
                     
                     # Stream funny response
                     if "generated_funny_response" in node_output and "generated_funny_response" not in yielded_responses:
@@ -487,7 +616,6 @@ async def invoke_graph_stream(initial_state: UserInputState):
 
                     # Stream advice
                     if "generated_advice" in node_output and "generated_advice" not in yielded_responses:
-                        print(f"Found advice: {node_output['generated_advice']}")  # Debug print
                         yield json.dumps({
                             "type": "advice",
                             "data": node_output["generated_advice"]
@@ -495,12 +623,12 @@ async def invoke_graph_stream(initial_state: UserInputState):
                         yielded_responses.add("generated_advice")
 
                     # Stream question response
-                    if "llm_response" in node_output and "llm_response" not in yielded_responses:
+                    if "rag_response" in node_output and "rag_response" not in yielded_responses:
                         yield json.dumps({
-                            "type": "response",
-                            "data": node_output["llm_response"]
+                            "type": "rag_response",
+                            "data": node_output["rag_response"]
                         })
-                        yielded_responses.add("llm_response")
+                        yielded_responses.add("rag_response")
                     
                     # Break if we've reached the END node
                     if node_name == "__end__":

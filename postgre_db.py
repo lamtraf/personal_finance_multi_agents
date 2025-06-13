@@ -8,15 +8,13 @@ import asyncpg
 # PostgreSQL connection URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# DATABASE_URL = "postgresql://kmoney-db:test1234@localhost:5432/kmoneydb"
-
 print("DATABASE_URL: ", DATABASE_URL)
 
 async def get_connection():
     return await asyncpg.connect(DATABASE_URL)
 
 from pydantic import BaseModel
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict
 from datetime import datetime, UTC
 
 class TransactionCreate(BaseModel):
@@ -66,7 +64,7 @@ async def create_transaction(data: TransactionCreate)-> str:
         raise HTTPException(status_code=500, detail=str(e))
     
     
-async def insert_bulk_transactions(data: List[TransactionCreate]):
+async def insert_bulk_transactions(data: List[TransactionCreate]) -> List[str]:
     query = """
         INSERT INTO "Transaction" (
             id, "userId", amount, note, date, "currencyId",
@@ -97,6 +95,42 @@ async def insert_bulk_transactions(data: List[TransactionCreate]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+
+class BudgetCreate(TypedDict):
+    user_id: str
+    amount: float 
+    name: str
+    category_id: str
+    
+async def insert_bulk_budgets(data: List[BudgetCreate]):
+    query = """
+        INSERT INTO "Budget" (
+            id, "userId", amount, name, "categoryId", "createdAt", "updatedAt"
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    """
+    params = [
+        (
+            str(uuid.uuid4()),
+            item['user_id'],
+            float(item['amount']),
+            item['name'],
+            item['category_id']
+        )
+        for item in data
+    ]
+    
+    print("PARAMS: ", params)
+    
+    # insert to db
+    try:
+        conn = await get_connection()
+        await conn.executemany(query, params)
+        await conn.close()
+        return [item[0] for item in params]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def get_categories() -> Dict[str, str]:
