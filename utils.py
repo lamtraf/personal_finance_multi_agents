@@ -1,4 +1,5 @@
 import datetime
+
 import json
 from typing import Dict, List
 from fastapi import HTTPException, logger
@@ -303,7 +304,7 @@ async def new_generate_ocr_table(image_url: str, user_id: str) -> tuple[List[Tra
                 "category_id":item.split(":")[0].strip(),
                 "category_name":item.split(":")[1].strip(),
                 "amount":int(item.split(":")[1].strip().replace(',', '').replace('.', '')),
-                "date":datetime.now(datetime.timezone(datetime.timedelta(hours=7))).strftime("%Y-%m-%d"),
+                "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7))).strftime("%Y-%m-%d %H:%M:%S.%f"),
                 "note":item.split(":")[1].strip(),
                 "source":"text_input",
                 "user_id":user_id,

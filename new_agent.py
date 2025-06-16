@@ -277,7 +277,7 @@ async def new_extractor_node(state: ExtractorState) -> ExtractorState:
             "category_id": category_id,
             "category_name": category_name,
             "amount": transaction["amount"],
-            "date": datetime.now(datetime.timezone(datetime.timedelta(hours=7))).strftime("%Y-%m-%d"),
+            "date": datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S.%f"),
             "note": transaction["note"],
             "source": "text_input",
             "user_id": state["user_id"],

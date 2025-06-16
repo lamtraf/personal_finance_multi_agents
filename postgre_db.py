@@ -1,4 +1,5 @@
 import os
+import traceback
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -15,13 +16,13 @@ async def get_connection():
 
 from pydantic import BaseModel
 from typing import Dict, List, Optional, TypedDict
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timezone, timedelta
 
 class TransactionCreate(BaseModel):
     userId: str
     amount: float
     note: Optional[str] = None
-    date: Optional[datetime] = None  # Optional if default used
+    date: Optional[datetime] = None
     currencyId: str
     categoryId: str
     imageUrl: Optional[str] = None
@@ -87,12 +88,18 @@ async def insert_bulk_transactions(data: List[TransactionCreate]) -> List[str]:
         )
         for item in data
     ]
+    
+    print("PARAMS: ", params)
+    
+    print("--------------------------------")
+    
     try:
         conn = await get_connection()
         await conn.executemany(query, params)
         await conn.close()
         return [item[0] for item in params]
     except Exception as e:
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     
 
@@ -120,7 +127,6 @@ async def insert_bulk_budgets(data: List[BudgetCreate]):
         )
         for item in data
     ]
-    
     print("PARAMS: ", params)
     
     # insert to db
